@@ -333,15 +333,66 @@ export default function PlannerTab({
 
   // --- RENDERING PARSER HELPERS ---
 
-  const getDeptColor = (color: string, type: 'bg' | 'border' | 'text' | 'ring' | 'hover') => {
-    switch (color) {
-      case 'blue': return type === 'bg' ? 'bg-blue-50' : type === 'border' ? 'border-blue-100' : type === 'text' ? 'text-blue-900' : type === 'ring' ? 'ring-blue-900' : 'hover:bg-blue-100/50';
-      case 'amber': return type === 'bg' ? 'bg-amber-50' : type === 'border' ? 'border-amber-100' : type === 'text' ? 'text-amber-900' : type === 'ring' ? 'ring-amber-900' : 'hover:bg-amber-100/50';
-      case 'emerald': return type === 'bg' ? 'bg-emerald-50' : type === 'border' ? 'border-emerald-100' : type === 'text' ? 'text-emerald-900' : type === 'ring' ? 'ring-emerald-900' : 'hover:bg-emerald-100/50';
-      case 'purple': return type === 'bg' ? 'bg-purple-50' : type === 'border' ? 'border-purple-100' : type === 'text' ? 'text-purple-900' : type === 'ring' ? 'ring-purple-900' : 'hover:bg-purple-100/50';
-      case 'rose': return type === 'bg' ? 'bg-rose-50' : type === 'border' ? 'border-rose-100' : type === 'text' ? 'text-rose-900' : type === 'ring' ? 'ring-rose-900' : 'hover:bg-rose-100/50';
-      default: return type === 'bg' ? 'bg-slate-50' : type === 'border' ? 'border-slate-100' : type === 'text' ? 'text-slate-900' : type === 'ring' ? 'ring-slate-900' : 'hover:bg-slate-100/50';
+  const renderDynamicColorsStyle = () => {
+    const activeColorsSet = new Set<string>();
+    if (settings.departmentColors) {
+      Object.values(settings.departmentColors).forEach((col) => {
+        if (col) activeColorsSet.add(col);
+      });
     }
+    // Ensure default presets are always present
+    ["blue", "amber", "emerald", "purple", "rose", "slate"].forEach((col) => activeColorsSet.add(col));
+
+    const activeColors = Array.from(activeColorsSet);
+    
+    // Map of preset tailwind colors to actual HEX values for fallback
+    const presetMap: Record<string, string> = {
+      blue: "#3b82f6",
+      amber: "#f59e0b",
+      emerald: "#10b981",
+      purple: "#a855f7",
+      rose: "#f43f5e",
+      slate: "#64748b"
+    };
+
+    let css = "";
+    activeColors.forEach((colorVal) => {
+      const isHex = colorVal.startsWith("#");
+      const hex = isHex ? colorVal : (presetMap[colorVal] || "#64748b");
+      const safeKey = isHex ? `hex-${colorVal.replace("#", "")}` : colorVal;
+      
+      css += `
+        .dept-custom-bg-${safeKey} {
+          background-color: ${hex}0a !important; /* ~4% opacity */
+        }
+        .dept-custom-bg-sticky-${safeKey} {
+          background-color: ${hex}14 !important; /* ~8% opacity */
+        }
+        .dept-custom-border-${safeKey} {
+          border-color: ${hex}26 !important; /* ~15% opacity */
+        }
+        .dept-custom-text-${safeKey} {
+          color: ${hex} !important;
+        }
+        .dept-custom-hover-${safeKey}:hover {
+          background-color: ${hex}21 !important; /* ~13% opacity */
+        }
+        .dept-custom-ring-${safeKey}:focus-within, .dept-custom-ring-${safeKey}:focus {
+          border-color: ${hex} !important;
+          outline: none;
+          box-shadow: 0 0 0 1px ${hex} !important;
+        }
+      `;
+    });
+
+    return <style dangerouslySetInnerHTML={{ __html: css }} />;
+  };
+
+  const getDeptColor = (color: string, type: "bg" | "border" | "text" | "ring" | "hover") => {
+    const activeColor = color || "slate";
+    const isHex = activeColor.startsWith("#");
+    const safeKey = isHex ? `hex-${activeColor.replace("#", "")}` : activeColor;
+    return `dept-custom-${type}-${safeKey}`;
   };
   const renderMachineStatusBadge = (date: string, machineId: string) => {
     const day = getDaySchedule(date);
@@ -444,6 +495,7 @@ export default function PlannerTab({
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-12 gap-8" id="planner-tab-view">
+      {renderDynamicColorsStyle()}
       
       {/* LEFT COLUMN: TIMELINE SHEET (9 COLS) */}
       <div className="xl:col-span-9 space-y-6">

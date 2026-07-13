@@ -46,6 +46,152 @@ interface ProductionNeedsTabProps {
   onImportToPriorities?: (needs: { flavor: string; packSizeId: string; mcsNeeded: number }[]) => void;
 }
 
+function findBestFlavor(raw: string, flavors: string[]) {
+  if (!raw) return null;
+  const clean = raw.toLowerCase().replace(/\bgum\b/g, "").replace(/\s+/g, "").trim();
+  for (const f of flavors) {
+    const fClean = f.toLowerCase().replace(/\s+/g, "").trim();
+    if (clean === fClean || clean.includes(fClean) || fClean.includes(clean)) {
+      return f;
+    }
+  }
+  return null;
+}
+
+function findBestPackSize(raw: string, packSizes: any[]) {
+  if (!raw) return null;
+  const clean = raw.toLowerCase().replace(/\bpacks?\b/g, "pack").replace(/\s+/g, "").trim();
+  for (const ps of packSizes) {
+    const psClean = ps.name.toLowerCase().replace(/\bpacks?\b/g, "pack").replace(/\s+/g, "").trim();
+    const psIdClean = ps.id.toLowerCase().replace(/\s+/g, "").trim();
+    if (clean.includes(psClean) || psClean.includes(clean) || clean.includes(psIdClean) || psIdClean.includes(clean)) {
+      return ps;
+    }
+  }
+  // Fallbacks: e.g. "bag mc" matches "Bag 70ct" (id contains "bag")
+  if (clean.includes("bag") || clean.includes("bg")) {
+    const bagPs = packSizes.find(ps => ps.id.includes("bag") || ps.name.toLowerCase().includes("bag"));
+    if (bagPs) return bagPs;
+  }
+  if (clean.includes("bulk")) {
+    const bulkPs = packSizes.find(ps => ps.id.includes("bulk") || ps.name.toLowerCase().includes("bulk"));
+    if (bulkPs) return bulkPs;
+  }
+  // Try checking numeric parts like "12" in both
+  const digits = clean.match(/\d+/);
+  if (digits) {
+    const numStr = digits[0];
+    for (const ps of packSizes) {
+      if (ps.name.toLowerCase().includes(numStr) || ps.id.toLowerCase().includes(numStr)) {
+        return ps;
+      }
+    }
+  }
+  return null;
+}
+
+function parseRowsToNeeds(rows: string[][], settings: Settings): ProductionNeedsRow[] {
+  if (rows.length === 0) return [];
+
+  // Detect Matrix/Crosstab format:
+  // First row has flavors. Let's count how many headers after column 0 match any of our flavors.
+  let matchedFlavorsCount = 0;
+  for (let c = 1; c < rows[0].length; c++) {
+    const val = rows[0][c] || "";
+    if (findBestFlavor(val, settings.flavors)) {
+      matchedFlavorsCount++;
+    }
+  }
+
+  const isMatrix = matchedFlavorsCount >= 2;
+
+  if (isMatrix) {
+    const parsedNeeds: ProductionNeedsRow[] = [];
+    const columnFlavors: (string | null)[] = [null]; // pad first col
+    for (let c = 1; c < rows[0].length; c++) {
+      const val = rows[0][c] || "";
+      columnFlavors.push(findBestFlavor(val, settings.flavors));
+    }
+
+    for (let r = 1; r < rows.length; r++) {
+      const row = rows[r];
+      if (row.length === 0) continue;
+      const rawPackName = row[0] || "";
+      const bestPack = findBestPackSize(rawPackName, settings.packSizes);
+      if (!bestPack) {
+        // Skip non-matching rows like totals or logs
+        continue;
+      }
+
+      for (let c = 1; c < row.length; c++) {
+        const flavor = columnFlavors[c];
+        if (!flavor) continue;
+
+        const rawVal = row[c] || "";
+        const casesNeeded = parseFloat(rawVal.replace(/,/g, ""));
+        if (!isNaN(casesNeeded) && casesNeeded > 0) {
+          parsedNeeds.push({
+            flavor,
+            packSizeName: bestPack.name,
+            casesNeeded,
+            notes: `Matrix: ${rawPackName}`,
+          });
+        }
+      }
+    }
+    return parsedNeeds;
+  } else {
+    // Normal vertical tabular format
+    let flavorCol = 0;
+    let packCol = 1;
+    let needCol = 2;
+    let notesCol = 3;
+
+    const header = rows[0].map((h) => h.toLowerCase());
+    const hasHeaders = header.some((h) => h.includes("flavor") || h.includes("product") || h.includes("pack") || h.includes("need") || h.includes("case"));
+
+    if (hasHeaders) {
+      const foundFlavor = header.findIndex((h) => h.includes("flavor") || h.includes("product"));
+      const foundPack = header.findIndex((h) => h.includes("pack") || h.includes("size"));
+      const foundNeed = header.findIndex((h) => h.includes("need") || h.includes("case") || h.includes("qty"));
+      const foundNotes = header.findIndex((h) => h.includes("note") || h.includes("desc"));
+
+      if (foundFlavor !== -1) flavorCol = foundFlavor;
+      if (foundPack !== -1) packCol = foundPack;
+      if (foundNeed !== -1) needCol = foundNeed;
+      if (foundNotes !== -1) notesCol = foundNotes;
+    }
+
+    const parsedNeeds: ProductionNeedsRow[] = [];
+    const startIndex = hasHeaders ? 1 : 0;
+
+    for (let i = startIndex; i < rows.length; i++) {
+      const row = rows[i];
+      if (row.length < 2) continue;
+
+      const rawFlavor = row[flavorCol] || "";
+      const rawPack = row[packCol] || "";
+      const rawQty = parseFloat((row[needCol] || "0").replace(/,/g, ""));
+      const rawNotes = row[notesCol] || "";
+
+      // Attempt to map raw flavor name to real settings flavor
+      const matchedFlavor = findBestFlavor(rawFlavor, settings.flavors) || rawFlavor;
+      const matchedPack = findBestPackSize(rawPack, settings.packSizes);
+      const packName = matchedPack ? matchedPack.name : rawPack;
+
+      if (matchedFlavor && !isNaN(rawQty) && rawQty > 0) {
+        parsedNeeds.push({
+          flavor: matchedFlavor,
+          packSizeName: packName,
+          casesNeeded: rawQty,
+          notes: rawNotes,
+        });
+      }
+    }
+    return parsedNeeds;
+  }
+}
+
 const DEFAULT_SPREADSHEET_ID = "1BxiMVs0XRA5nFMdKvBdBZjgmUUYptlbs74OgvE2upms"; // Google Sheets standard example
 const DEFAULT_RANGE = "Class Data!A2:E30";
 
@@ -142,27 +288,54 @@ export default function ProductionNeedsTab({
     const spreadsheetId = getSpreadsheetId(sheetUrlOrId);
 
     if (isDemoMode) {
-      // Simulated sheets pull
       setLoading(true);
       setTimeout(() => {
-        const demoData: ProductionNeedsRow[] = [
-          { flavor: "Peppermint", packSizeName: "Bag 70ct", casesNeeded: 150, notes: "Amazon replenishment" },
-          { flavor: "Cinnamon", packSizeName: "Bag 70ct", casesNeeded: 95, notes: "Retail PO #44102" },
-          { flavor: "Fennel", packSizeName: "10 Pack", casesNeeded: 40, notes: "Distributor replenishment" },
-          { flavor: "Ginger", packSizeName: "10 Pack", casesNeeded: 65, notes: "Urgent Out-of-Stock alert" },
-          { flavor: "Cleanse", packSizeName: "Bag 70ct", casesNeeded: 25, notes: "Backlog backlog clearing" },
-        ];
-        setProductionNeeds(demoData);
-        setRawRows([
-          ["Flavor/Product", "Pack Size", "Needed (MC)", "Notes"],
-          ["Peppermint", "Bag 70ct", "150", "Amazon replenishment"],
-          ["Cinnamon", "Bag 70ct", "95", "Retail PO #44102"],
-          ["Fennel", "10 Pack", "40", "Distributor replenishment"],
-          ["Ginger", "10 Pack", "65", "Urgent Out-of-Stock alert"],
-          ["Cleanse", "Bag 70ct", "25", "Backlog backlog clearing"],
-        ]);
+        let rowsToUse: string[][];
+        const upperRange = range.toUpperCase();
+        if (upperRange.includes("A4:P11") || upperRange.includes("WHAT TO COOK") || sheetUrlOrId.toUpperCase().includes("A4:P11")) {
+          // Matrix Mode matching user's spreadsheet screenshot exactly
+          rowsToUse = [
+            [
+              "",
+              "Peppermint Gum",
+              "Cinnamon Gum",
+              "Ginger Gum",
+              "Fennel Gum",
+              "Coffee Gum",
+              "Maple Gum",
+              "Cleanse Gum",
+              "Spearmint Gum",
+              "Trader Joe's Gum",
+              "SF Peppermint Gum",
+              "SF Bubblegum Gum",
+              "SF Spearmint Gum",
+              "Pumpkin Spice Gum",
+              "Wintergreen Gum"
+            ],
+            ["MCs on Sales Order Log", "253", "14", "5", "0", "0", "0", "252", "349", "540", "1", "94", "136", "0", "110"],
+            ["12 Packs MC", "119", "14", "5", "0", "0", "0", "20", "38", "540", "", "", "", "", ""],
+            ["6 Packs MC", "", "", "", "", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0"],
+            ["3 Packs MC", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+            ["Bulk MC", "", "", "", "", "", "", "11", "14", "", "0", "62", "90", "", ""],
+            ["Bag MC", "670", "", "", "", "", "", "1075", "1451", "", "", "", "", "", "515"]
+          ];
+        } else {
+          // Standard demo rows
+          rowsToUse = [
+            ["Flavor/Product", "Pack Size", "Needed (MC)", "Notes"],
+            ["Peppermint", "Bag 70ct", "150", "Amazon replenishment"],
+            ["Cinnamon", "Bag 70ct", "95", "Retail PO #44102"],
+            ["Fennel", "10 Pack", "40", "Distributor replenishment"],
+            ["Ginger", "10 Pack", "65", "Urgent Out-of-Stock alert"],
+            ["Cleanse", "Bag 70ct", "25", "Backlog backlog clearing"],
+          ];
+        }
+
+        setRawRows(rowsToUse);
+        const parsed = parseRowsToNeeds(rowsToUse, settings);
+        setProductionNeeds(parsed);
         setLoading(false);
-        showSuccess("Fetched 5 rows of production needs (Demo Sheet Mode).");
+        showSuccess(`Successfully fetched and parsed ${parsed.length} production needs (Demo Mode)!`);
       }, 700);
       return;
     }
@@ -196,56 +369,9 @@ export default function ProductionNeedsTab({
       }
 
       setRawRows(rows);
-
-      // Simple heuristic parsing to ProductionNeedsRow
-      // Headers in first row or try to auto-match columns
-      let flavorCol = 0;
-      let packCol = 1;
-      let needCol = 2;
-      let notesCol = 3;
-
-      const header = rows[0].map((h) => h.toLowerCase());
-      const hasHeaders = header.some((h) => h.includes("flavor") || h.includes("product") || h.includes("pack") || h.includes("need") || h.includes("case"));
-
-      if (hasHeaders) {
-        const foundFlavor = header.findIndex((h) => h.includes("flavor") || h.includes("product"));
-        const foundPack = header.findIndex((h) => h.includes("pack") || h.includes("size"));
-        const foundNeed = header.findIndex((h) => h.includes("need") || h.includes("case") || h.includes("qty"));
-        const foundNotes = header.findIndex((h) => h.includes("note") || h.includes("desc"));
-
-        if (foundFlavor !== -1) flavorCol = foundFlavor;
-        if (foundPack !== -1) packCol = foundPack;
-        if (foundNeed !== -1) needCol = foundNeed;
-        if (foundNotes !== -1) notesCol = foundNotes;
-      }
-
-      const parsedNeeds: ProductionNeedsRow[] = [];
-      const startIndex = hasHeaders ? 1 : 0;
-
-      for (let i = startIndex; i < rows.length; i++) {
-        const row = rows[i];
-        if (row.length < 2) continue;
-
-        const rawFlavor = row[flavorCol] || "";
-        const rawPack = row[packCol] || "";
-        const rawQty = parseFloat(row[needCol] || "0");
-        const rawNotes = row[notesCol] || "";
-
-        // Attempt to map raw flavor name to real settings flavor
-        const matchedFlavor = settings.flavors.find(
-          (f) => f.toLowerCase() === rawFlavor.toLowerCase()
-        ) || rawFlavor;
-
-        parsedNeeds.push({
-          flavor: matchedFlavor,
-          packSizeName: rawPack,
-          casesNeeded: isNaN(rawQty) ? 0 : rawQty,
-          notes: rawNotes,
-        });
-      }
-
-      setProductionNeeds(parsedNeeds);
-      showSuccess(`Successfully imported ${parsedNeeds.length} production needs from Google Sheet!`);
+      const parsed = parseRowsToNeeds(rows, settings);
+      setProductionNeeds(parsed);
+      showSuccess(`Successfully imported ${parsed.length} production needs from Google Sheet!`);
     } catch (err: any) {
       console.error(err);
       setErrorMsg("Failed to query Google Sheet: " + err.message);
@@ -366,8 +492,7 @@ export default function ProductionNeedsTab({
               <label className="text-[11px] font-semibold text-slate-400">Spreadsheet ID or URL</label>
               <input
                 type="text"
-                disabled={isDemoMode}
-                className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-slate-400 disabled:opacity-60"
+                className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-slate-400"
                 placeholder={DEFAULT_SPREADSHEET_ID}
                 value={sheetUrlOrId}
                 onChange={(e) => setSheetUrlOrId(e.target.value)}
@@ -380,12 +505,24 @@ export default function ProductionNeedsTab({
               <label className="text-[11px] font-semibold text-slate-400">Sheet Range</label>
               <input
                 type="text"
-                disabled={isDemoMode}
-                className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-slate-400 disabled:opacity-60"
+                className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-slate-400"
                 placeholder="e.g. Sheet1!A1:D20"
                 value={range}
                 onChange={(e) => setRange(e.target.value)}
               />
+            </div>
+
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setRange("'WHAT TO COOK'!A4:P11");
+                  showSuccess("Loaded 'WHAT TO COOK'!A4:P11 matrix range preset.");
+                }}
+                className="text-[10px] text-indigo-600 hover:text-indigo-800 font-semibold underline cursor-pointer"
+              >
+                👉 Load "'WHAT TO COOK'!A4:P11" matrix preset
+              </button>
             </div>
 
             <button
@@ -401,8 +538,8 @@ export default function ProductionNeedsTab({
           <div className="bg-slate-50 border border-slate-200 p-4.5 rounded-2xl space-y-2">
             <h4 className="text-xs font-bold text-slate-800">Integration Guidelines</h4>
             <ul className="text-[11px] text-slate-500 space-y-1.5 list-disc pl-4">
+              <li>Supports both <strong>standard vertical lists</strong> and <strong>transposed matrix layouts</strong> (flavors up top, pack sizes on left) automatically!</li>
               <li>Must share the target spreadsheet as "Anyone with link can view" or authorize the signed-in Google account.</li>
-              <li>Expected format columns: <strong>Flavor</strong>, <strong>Pack Size</strong>, <strong>Needed Cases</strong>, and optionally <strong>Notes</strong>.</li>
               <li>Toggle "Demo Mode" in the header to preview spreadsheet connections instantly!</li>
             </ul>
           </div>

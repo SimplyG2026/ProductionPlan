@@ -728,32 +728,72 @@ export default function SettingsTab({ settings, onUpdateSettings }: SettingsTabP
                 return (
                   <div key={dept} className="flex items-center justify-between py-3 first:pt-0 last:pb-0">
                     <span className="text-sm font-semibold text-slate-700 capitalize">{dept}</span>
-                    <div className="flex gap-2">
-                      {colorPalette.map((cp) => {
-                        const isSelected = currentColor === cp.id;
-                        return (
-                          <button
-                            key={cp.id}
-                            title={cp.name}
-                            type="button"
-                            onClick={() => {
-                              update({
-                                departmentColors: {
-                                  ...settings.departmentColors,
-                                  [dept]: cp.id,
-                                },
-                              });
-                            }}
-                            className={`w-6 h-6 rounded-full ${cp.bg} border ${
-                              isSelected ? "ring-2 ring-slate-900 ring-offset-2 scale-110" : "opacity-60 hover:opacity-100"
-                            } transition-all relative flex items-center justify-center`}
-                          >
-                            {isSelected && (
-                              <Check className="w-3 h-3 text-white" />
-                            )}
-                          </button>
-                        );
-                      })}
+                    <div className="flex items-center gap-3">
+                      <div className="flex gap-2">
+                        {colorPalette.map((cp) => {
+                          const isSelected = currentColor === cp.id;
+                          return (
+                            <button
+                              key={cp.id}
+                              title={cp.name}
+                              type="button"
+                              onClick={() => {
+                                update({
+                                  departmentColors: {
+                                    ...settings.departmentColors,
+                                    [dept]: cp.id,
+                                  },
+                                });
+                              }}
+                              className={`w-6 h-6 rounded-full ${cp.bg} border ${
+                                isSelected ? "ring-2 ring-slate-900 ring-offset-2 scale-110" : "opacity-60 hover:opacity-100"
+                              } transition-all relative flex items-center justify-center cursor-pointer`}
+                            >
+                              {isSelected && (
+                                <Check className="w-3 h-3 text-white" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="w-px h-5 bg-slate-200" />
+
+                      <div className="relative flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          title="Custom Color Wheel Picker"
+                          onClick={() => {
+                            document.getElementById(`color-picker-${dept}`)?.click();
+                          }}
+                          className={`w-6 h-6 rounded-full bg-[conic-gradient(red,yellow,lime,aqua,blue,magenta,red)] border ${
+                            currentColor.startsWith("#") ? "ring-2 ring-slate-900 ring-offset-2 scale-110" : "opacity-60 hover:opacity-100"
+                          } transition-all relative flex items-center justify-center cursor-pointer`}
+                        >
+                          {currentColor.startsWith("#") && (
+                            <div className="w-2.5 h-2.5 rounded-full bg-white border border-slate-300 shadow-xs" style={{ backgroundColor: currentColor }} />
+                          )}
+                        </button>
+                        <input
+                          id={`color-picker-${dept}`}
+                          type="color"
+                          value={currentColor.startsWith("#") ? currentColor : "#3b82f6"}
+                          onChange={(e) => {
+                            update({
+                              departmentColors: {
+                                ...settings.departmentColors,
+                                [dept]: e.target.value,
+                              },
+                            });
+                          }}
+                          className="sr-only"
+                        />
+                        {currentColor.startsWith("#") && (
+                          <span className="text-[10px] font-mono text-slate-500 uppercase">
+                            {currentColor}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
