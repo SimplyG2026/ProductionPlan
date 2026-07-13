@@ -24,7 +24,14 @@ import {
   ArrowRight, 
   Check, 
   HelpCircle,
-  Play
+  Play,
+  ChefHat,
+  Scissors,
+  Layers,
+  Package,
+  TrendingUp,
+  Info,
+  Sparkles
 } from "lucide-react";
 
 // Initialize Firebase App if not already initialized
@@ -210,13 +217,147 @@ export default function ProductionNeedsTab({
   const [range, setRange] = useState<string>("Sheet1!A1:D20");
 
   // Fetched Needs Data
-  const [productionNeeds, setProductionNeeds] = useState<ProductionNeedsRow[]>([]);
+  const [productionNeeds, setProductionNeeds] = useState<ProductionNeedsRow[]>(() => {
+    try {
+      const saved = localStorage.getItem("sg_production_needs");
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("sg_production_needs", JSON.stringify(productionNeeds));
+    } catch (e) {
+      console.error("Error writing production needs to local storage:", e);
+    }
+  }, [productionNeeds]);
   
   // Demo Mode toggle
   const [isDemoMode, setIsDemoMode] = useState(true);
 
   // Loaded rows raw representation
   const [rawRows, setRawRows] = useState<string[][]>([]);
+
+  // Pipeline Net Requirements calculation
+  const calculatePipelineRequirements = () => {
+    let fgInventory: any[] = [];
+    try {
+      const savedFG = localStorage.getItem("sg_finished_goods");
+      fgInventory = savedFG ? JSON.parse(savedFG) : [
+        { id: "1", flavor: "Peppermint", quantityMc: 120, lastUpdated: "2026-07-08", category: "Gum Bag 12ct" },
+        { id: "2", flavor: "Cinnamon", quantityMc: 85, lastUpdated: "2026-07-07", category: "Gum Bag 12ct" },
+        { id: "3", flavor: "Fennel", quantityMc: 45, lastUpdated: "2026-07-08", category: "Gum 12pk 24ct" },
+        { id: "4", flavor: "Ginger", quantityMc: 60, lastUpdated: "2026-07-06", category: "Gum 12pk 24ct" },
+        { id: "5", flavor: "Cleanse", quantityMc: 30, lastUpdated: "2026-07-08", category: "Gum Bag 12ct" },
+      ];
+    } catch (e) {
+      console.error("Error reading sg_finished_goods:", e);
+    }
+
+    const items = settings.flavors.map((flavor) => {
+      // Demands matching this flavor
+      const demands = productionNeeds.filter(
+        (n) => n.flavor.toLowerCase() === flavor.toLowerCase()
+      );
+
+      const grossDemandMc = demands.reduce((acc, curr) => acc + curr.casesNeeded, 0);
+      const grossDemandLbs = demands.reduce((acc, curr) => {
+        const matchedPs = findBestPackSize(curr.packSizeName, settings.packSizes);
+        const lbsPerMc = matchedPs ? matchedPs.lbsPerMc : 10;
+        return acc + (curr.casesNeeded * lbsPerMc);
+      }, 0);
+
+      // Finished goods matching this flavor
+      const fgItems = fgInventory.filter(
+        (item) => item.flavor.toLowerCase() === flavor.toLowerCase()
+      );
+      const fgOnHandMc = fgItems.reduce((acc, curr) => acc + curr.quantityMc, 0);
+      const fgOnHandLbs = fgItems.reduce((acc, curr) => {
+        const matchedPs = findBestPackSize(curr.category, settings.packSizes);
+        const lbsPerMc = matchedPs ? matchedPs.lbsPerMc : 10;
+        return acc + (curr.quantityMc * lbsPerMc);
+      }, 0);
+
+      // WIP on hand (from opening settings)
+      const wipCutLbs = settings.openingWipCut[flavor] || 0;
+      const wipExtrudedLbs = settings.openingWipExtruded[flavor] || 0;
+      const wipCookedLbs = settings.openingWipCooked[flavor] || 0;
+
+      // Stage-by-stage calculations
+      const packingNeededLbs = Math.max(0, grossDemandLbs - fgOnHandLbs);
+      const cuttingNeededLbs = Math.max(0, packingNeededLbs - wipCutLbs);
+      const extrudingNeededLbs = Math.max(0, cuttingNeededLbs - wipExtrudedLbs);
+      const cookingNeededLbs = Math.max(0, extrudingNeededLbs - wipCookedLbs);
+
+      // Conversions
+      const bigRoundSize = settings.cookingBigLbsPerRound || 100;
+      const cookingRounds = Math.ceil(cookingNeededLbs / bigRoundSize);
+
+      const exRate = settings.ex1LbsPerHour || 91;
+      const extrudingHours = extrudingNeededLbs / exRate;
+
+      const cutRate = settings.cuttingLbsPerHourPerPerson || 40;
+      const cuttingHours = cuttingNeededLbs / cutRate;
+
+      const totalInventoryLbs = fgOnHandLbs + wipCutLbs + wipExtrudedLbs + wipCookedLbs;
+      const extraLbs = Math.max(0, totalInventoryLbs - grossDemandLbs);
+
+      return {
+        flavor,
+        grossDemandLbs,
+        grossDemandMc,
+        fgOnHandLbs,
+        fgOnHandMc,
+        wipCutLbs,
+        wipExtrudedLbs,
+        wipCookedLbs,
+        packingNeededLbs,
+        cuttingNeededLbs,
+        extrudingNeededLbs,
+        cookingNeededLbs,
+        cookingRounds,
+        extrudingHours,
+        cuttingHours,
+        extraLbs,
+      };
+    });
+
+    const totalGrossLbs = items.reduce((acc, item) => acc + item.grossDemandLbs, 0);
+    const totalFgLbs = items.reduce((acc, item) => acc + item.fgOnHandLbs, 0);
+    const totalPackingNeededLbs = items.reduce((acc, item) => acc + item.packingNeededLbs, 0);
+
+    const totalCutWipLbs = items.reduce((acc, item) => acc + item.wipCutLbs, 0);
+    const totalCuttingNeededLbs = items.reduce((acc, item) => acc + item.cuttingNeededLbs, 0);
+    const totalCuttingHours = items.reduce((acc, item) => acc + item.cuttingHours, 0);
+
+    const totalExtrudedWipLbs = items.reduce((acc, item) => acc + item.wipExtrudedLbs, 0);
+    const totalExtrudingNeededLbs = items.reduce((acc, item) => acc + item.extrudingNeededLbs, 0);
+    const totalExtrudingHours = items.reduce((acc, item) => acc + item.extrudingHours, 0);
+
+    const totalCookedWipLbs = items.reduce((acc, item) => acc + item.wipCookedLbs, 0);
+    const totalCookingNeededLbs = items.reduce((acc, item) => acc + item.cookingNeededLbs, 0);
+    const totalCookingRounds = items.reduce((acc, item) => acc + item.cookingRounds, 0);
+
+    return {
+      items,
+      totals: {
+        grossLbs: totalGrossLbs,
+        fgLbs: totalFgLbs,
+        packingNeededLbs: totalPackingNeededLbs,
+        cutWipLbs: totalCutWipLbs,
+        cuttingNeededLbs: totalCuttingNeededLbs,
+        cuttingHours: totalCuttingHours,
+        extrudedWipLbs: totalExtrudedWipLbs,
+        extrudingNeededLbs: totalExtrudingNeededLbs,
+        extrudingHours: totalExtrudingHours,
+        cookedWipLbs: totalCookedWipLbs,
+        cookingNeededLbs: totalCookingNeededLbs,
+        cookingRounds: totalCookingRounds,
+      }
+    };
+  };
 
   // Listen to Firebase auth state
   useEffect(() => {
@@ -409,6 +550,8 @@ export default function ProductionNeedsTab({
     showSuccess("Successfully imported spreadsheet needs into weekly packing schedule priorities!");
   };
 
+  const pipeline = calculatePipelineRequirements();
+
   return (
     <div className="space-y-8" id="production-needs-view">
       {/* 1. Header */}
@@ -596,6 +739,257 @@ export default function ProductionNeedsTab({
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+
+          {/* 3. Pipeline Net Requirements Forecast Section */}
+          <div className="glass p-5 space-y-6">
+            <div className="border-b border-slate-100 pb-3 flex flex-col md:flex-row md:items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                  <Sparkles className="w-4.5 h-4.5 text-indigo-600 animate-pulse" />
+                  Pipeline Net Production Requirements
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  Calculated net volumes needed at each processing stage, offsetting spreadsheet gross demand with Finished Goods and WIP on hand.
+                </p>
+              </div>
+              <div className="text-[10px] bg-slate-100 text-slate-600 px-2 py-1 rounded-md font-mono self-start md:self-auto">
+                Automatic Pull (MRP)
+              </div>
+            </div>
+
+            {/* Stage Bento Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* Cook Stage Card */}
+              <div className="p-4 rounded-2xl bg-blue-50/50 border border-blue-100/60 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-blue-800 uppercase tracking-wider">1. Cook Stage</span>
+                  <ChefHat className="w-4 h-4 text-blue-600" />
+                </div>
+                <div>
+                  <div className="text-lg font-black text-blue-900">
+                    {pipeline.totals.cookingNeededLbs.toLocaleString()} lbs
+                  </div>
+                  <div className="text-[10px] font-semibold text-blue-600">
+                    👉 {pipeline.totals.cookingRounds} Big Rounds needed
+                  </div>
+                </div>
+                <div className="pt-1 border-t border-blue-100/40 flex justify-between text-[9px] text-blue-500">
+                  <span>WIP on hand:</span>
+                  <span className="font-bold">{pipeline.totals.cookedWipLbs.toLocaleString()} lbs</span>
+                </div>
+              </div>
+
+              {/* Extrude Stage Card */}
+              <div className="p-4 rounded-2xl bg-amber-50/50 border border-amber-100/60 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-amber-800 uppercase tracking-wider">2. Extrude Stage</span>
+                  <Layers className="w-4 h-4 text-amber-600" />
+                </div>
+                <div>
+                  <div className="text-lg font-black text-amber-900">
+                    {pipeline.totals.extrudingNeededLbs.toLocaleString()} lbs
+                  </div>
+                  <div className="text-[10px] font-semibold text-amber-600">
+                    👉 {pipeline.totals.extrudingHours.toFixed(1)} Machine Hours
+                  </div>
+                </div>
+                <div className="pt-1 border-t border-amber-100/40 flex justify-between text-[9px] text-amber-500">
+                  <span>WIP on hand:</span>
+                  <span className="font-bold">{pipeline.totals.extrudedWipLbs.toLocaleString()} lbs</span>
+                </div>
+              </div>
+
+              {/* Cut Stage Card */}
+              <div className="p-4 rounded-2xl bg-emerald-50/50 border border-emerald-100/60 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider">3. Cut Stage</span>
+                  <Scissors className="w-4 h-4 text-emerald-600" />
+                </div>
+                <div>
+                  <div className="text-lg font-black text-emerald-900">
+                    {pipeline.totals.cuttingNeededLbs.toLocaleString()} lbs
+                  </div>
+                  <div className="text-[10px] font-semibold text-emerald-600">
+                    👉 {pipeline.totals.cuttingHours.toFixed(1)} Cutter Hours
+                  </div>
+                </div>
+                <div className="pt-1 border-t border-emerald-100/40 flex justify-between text-[9px] text-emerald-500">
+                  <span>WIP on hand:</span>
+                  <span className="font-bold">{pipeline.totals.cutWipLbs.toLocaleString()} lbs</span>
+                </div>
+              </div>
+
+              {/* Pack Stage Card */}
+              <div className="p-4 rounded-2xl bg-purple-50/50 border border-purple-100/60 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-purple-800 uppercase tracking-wider">4. Pack Stage</span>
+                  <Package className="w-4 h-4 text-purple-600" />
+                </div>
+                <div>
+                  <div className="text-lg font-black text-purple-900">
+                    {pipeline.totals.packingNeededLbs.toLocaleString()} lbs
+                  </div>
+                  <div className="text-[10px] font-semibold text-purple-600">
+                    👉 ~{Math.ceil(pipeline.totals.packingNeededLbs / 10).toLocaleString()} est. MC
+                  </div>
+                </div>
+                <div className="pt-1 border-t border-purple-100/40 flex justify-between text-[9px] text-purple-500">
+                  <span>FG on hand:</span>
+                  <span className="font-bold">{pipeline.totals.fgLbs.toLocaleString()} lbs</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Pipeline detailed breakdown table */}
+            <div className="space-y-2">
+              <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5 pt-2">
+                <Info className="w-3.5 h-3.5 text-slate-400" />
+                Flavor Overview
+              </h4>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[11px] text-left text-slate-700 border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50/80 text-slate-500 font-bold uppercase tracking-wider text-[9px]">
+                      <th className="py-2.5 px-3">Flavor</th>
+                      <th className="py-2.5 px-2 text-right bg-indigo-50/30 text-indigo-900">Gross Demand</th>
+                      <th className="py-2.5 px-2 text-right text-slate-500">FG On Hand</th>
+                      <th className="py-2.5 px-2 text-right bg-purple-50/40 text-purple-900 border-r border-slate-100">Packing Net</th>
+                      <th className="py-2.5 px-2 text-right text-slate-500">Cut WIP</th>
+                      <th className="py-2.5 px-2 text-right bg-emerald-50/40 text-emerald-900 border-r border-slate-100">Cutting Net</th>
+                      <th className="py-2.5 px-2 text-right text-slate-500">Extruded WIP</th>
+                      <th className="py-2.5 px-2 text-right bg-amber-50/40 text-amber-900 border-r border-slate-100">Extruding Net</th>
+                      <th className="py-2.5 px-2 text-right text-slate-500">Cooked WIP</th>
+                      <th className="py-2.5 px-3 text-right bg-blue-50/40 text-blue-900 border-r border-slate-100">Cooking Net</th>
+                      <th className="py-2.5 px-3 text-right bg-emerald-50/40 text-emerald-900 font-extrabold">Extra/Surplus</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {pipeline.items.some(item => item.grossDemandLbs > 0 || item.fgOnHandLbs > 0 || item.wipCookedLbs > 0) ? (
+                      pipeline.items.map((item) => (
+                        <tr key={item.flavor} className="hover:bg-slate-50/60 transition-colors">
+                          <td className="py-2.5 px-3 font-bold text-slate-800">{item.flavor}</td>
+                          
+                          {/* Demand */}
+                          <td className="py-2.5 px-2 text-right bg-indigo-50/20">
+                            {item.grossDemandLbs > 0 ? (
+                              <div>
+                                <span className="font-semibold text-indigo-950">{item.grossDemandLbs.toLocaleString()} lbs</span>
+                                <div className="text-[8px] text-slate-400">({item.grossDemandMc} MC)</div>
+                              </div>
+                            ) : (
+                              <span className="text-slate-300">-</span>
+                            )}
+                          </td>
+
+                          {/* FG on Hand */}
+                          <td className="py-2.5 px-2 text-right text-slate-600">
+                            {item.fgOnHandLbs > 0 ? (
+                              <div>
+                                <span>{item.fgOnHandLbs.toLocaleString()} lbs</span>
+                                <div className="text-[8px] text-slate-400">({item.fgOnHandMc} MC)</div>
+                              </div>
+                            ) : (
+                              <span className="text-slate-300">-</span>
+                            )}
+                          </td>
+
+                          {/* Pack Net */}
+                          <td className="py-2.5 px-2 text-right bg-purple-50/20 font-bold text-purple-700 border-r border-slate-100">
+                            {item.packingNeededLbs > 0 ? (
+                              <div>
+                                <span>{item.packingNeededLbs.toLocaleString()} lbs</span>
+                                <div className="text-[8px] text-purple-400">(~{Math.ceil(item.packingNeededLbs / 10)} MC)</div>
+                              </div>
+                            ) : (
+                              <span className="text-emerald-600 font-normal">Fully Stocked</span>
+                            )}
+                          </td>
+
+                          {/* Cut WIP */}
+                          <td className="py-2.5 px-2 text-right text-slate-600">
+                            {item.wipCutLbs > 0 ? (
+                              <span>{item.wipCutLbs.toLocaleString()} lbs</span>
+                            ) : (
+                              <span className="text-slate-300">-</span>
+                            )}
+                          </td>
+
+                          {/* Cutting Net */}
+                          <td className="py-2.5 px-2 text-right bg-emerald-50/20 font-bold text-emerald-700 border-r border-slate-100">
+                            {item.cuttingNeededLbs > 0 ? (
+                              <div>
+                                <span>{item.cuttingNeededLbs.toLocaleString()} lbs</span>
+                                <div className="text-[8px] text-emerald-500">({item.cuttingHours.toFixed(1)} hrs)</div>
+                              </div>
+                            ) : (
+                              <span className="text-emerald-600 font-normal">No Cut Needed</span>
+                            )}
+                          </td>
+
+                          {/* Extruded WIP */}
+                          <td className="py-2.5 px-2 text-right text-slate-600">
+                            {item.wipExtrudedLbs > 0 ? (
+                              <span>{item.wipExtrudedLbs.toLocaleString()} lbs</span>
+                            ) : (
+                              <span className="text-slate-300">-</span>
+                            )}
+                          </td>
+
+                          {/* Extruding Net */}
+                          <td className="py-2.5 px-2 text-right bg-amber-50/20 font-bold text-amber-700 border-r border-slate-100">
+                            {item.extrudingNeededLbs > 0 ? (
+                              <div>
+                                <span>{item.extrudingNeededLbs.toLocaleString()} lbs</span>
+                                <div className="text-[8px] text-amber-500">({item.extrudingHours.toFixed(1)} hrs)</div>
+                              </div>
+                            ) : (
+                              <span className="text-emerald-600 font-normal">No Extrude Needed</span>
+                            )}
+                          </td>
+
+                          {/* Cooked WIP */}
+                          <td className="py-2.5 px-2 text-right text-slate-600">
+                            {item.wipCookedLbs > 0 ? (
+                              <span>{item.wipCookedLbs.toLocaleString()} lbs</span>
+                            ) : (
+                              <span className="text-slate-300">-</span>
+                            )}
+                          </td>
+
+                          {/* Cooking Net */}
+                          <td className="py-2.5 px-3 text-right bg-blue-50/20 font-black text-blue-800 border-r border-slate-100">
+                            {item.cookingNeededLbs > 0 ? (
+                              <div>
+                                <span>{item.cookingNeededLbs.toLocaleString()} lbs</span>
+                                <div className="text-[8px] text-blue-600">({item.cookingRounds} rounds)</div>
+                              </div>
+                            ) : (
+                              <span className="text-emerald-600 font-normal">No Cook Needed</span>
+                            )}
+                          </td>
+
+                          {/* Extra / Surplus */}
+                          <td className="py-2.5 px-3 text-right bg-emerald-50/20 font-black text-emerald-800">
+                            {item.extraLbs > 0 ? (
+                              <span>{item.extraLbs.toLocaleString()} lbs</span>
+                            ) : (
+                              <span className="text-slate-300">-</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={11} className="text-center py-6 text-slate-400">
+                          No active demands loaded. Fetch sheets data above to generate your requirements pipeline.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
 

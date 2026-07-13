@@ -41,7 +41,7 @@ import {
   FileSpreadsheet,
 } from "lucide-react";
 
-const WipSection = ({ title, total, unit, flavorBreakdown, colorClass }: { title: string, total: string, unit: string, flavorBreakdown: {flavor: string, quantity: number}[], colorClass: string }) => {
+const WipSection = ({ title, total, unit, flavorBreakdown, colorClass }: { title: string, total: string, unit: string, flavorBreakdown: {flavor: string, quantity: number, suffix?: string}[], colorClass: string }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   return (
     <div className="flex flex-col items-end">
@@ -51,8 +51,8 @@ const WipSection = ({ title, total, unit, flavorBreakdown, colorClass }: { title
       </button>
       {isExpanded && flavorBreakdown.length > 0 && (
           <div className="mt-1 flex flex-col items-end text-[9px] text-slate-400 border-t border-slate-200 pt-1">
-            {flavorBreakdown.map(({flavor, quantity}) => (
-              <span key={flavor} className="whitespace-nowrap">{flavor}: {quantity.toFixed(1)}</span>
+            {flavorBreakdown.map(({flavor, quantity, suffix}) => (
+              <span key={flavor} className="whitespace-nowrap">{flavor}: {quantity.toFixed(1)}{suffix ? ` ${suffix}` : ""}</span>
             ))}
           </div>
       )}
@@ -82,6 +82,49 @@ interface PlannerTabProps {
   onUpdatePriorities: (newPriorities: PackingPriorityItem[]) => void;
   onUpdateSettings?: (newSettings: Settings) => void;
   summaries?: DailySummary[];
+}
+
+function findBestFlavor(raw: string, flavors: string[]) {
+  if (!raw) return null;
+  const clean = raw.toLowerCase().replace(/\bgum\b/g, "").replace(/\s+/g, "").trim();
+  for (const f of flavors) {
+    const fClean = f.toLowerCase().replace(/\s+/g, "").trim();
+    const fCleanNoSpace = f.toLowerCase().replace(/\s+/g, "").trim();
+    if (clean === fClean || clean.includes(fClean) || fClean.includes(clean)) {
+      return f;
+    }
+  }
+  return null;
+}
+
+function findBestPackSize(raw: string, packSizes: any[]) {
+  if (!raw) return null;
+  const clean = raw.toLowerCase().replace(/\bpacks?\b/g, "pack").replace(/\s+/g, "").trim();
+  for (const ps of packSizes) {
+    const psClean = ps.name.toLowerCase().replace(/\bpacks?\b/g, "pack").replace(/\s+/g, "").trim();
+    const psIdClean = ps.id.toLowerCase().replace(/\s+/g, "").trim();
+    if (clean.includes(psClean) || psClean.includes(clean) || clean.includes(psIdClean) || psIdClean.includes(clean)) {
+      return ps;
+    }
+  }
+  if (clean.includes("bag") || clean.includes("bg")) {
+    const bagPs = packSizes.find(ps => ps.id.includes("bag") || ps.name.toLowerCase().includes("bag"));
+    if (bagPs) return bagPs;
+  }
+  if (clean.includes("bulk")) {
+    const bulkPs = packSizes.find(ps => ps.id.includes("bulk") || ps.name.toLowerCase().includes("bulk"));
+    if (bulkPs) return bulkPs;
+  }
+  const digits = clean.match(/\d+/);
+  if (digits) {
+    const numStr = digits[0];
+    for (const ps of packSizes) {
+      if (ps.name.toLowerCase().includes(numStr) || ps.id.toLowerCase().includes(numStr)) {
+        return ps;
+      }
+    }
+  }
+  return null;
 }
 
 export default function PlannerTab({
@@ -115,6 +158,79 @@ export default function PlannerTab({
   const visibleDates = useMemo(() => {
     return dates;
   }, [dates]);
+
+  const cookingNeededData = useMemo(() => {
+    let fgInventory: any[] = [];
+    try {
+      const savedFG = localStorage.getItem("sg_finished_goods");
+      fgInventory = savedFG ? JSON.parse(savedFG) : [
+        { id: "1", flavor: "Peppermint", quantityMc: 120, lastUpdated: "2026-07-08", category: "Gum Bag 12ct" },
+        { id: "2", flavor: "Cinnamon", quantityMc: 85, lastUpdated: "2026-07-07", category: "Gum Bag 12ct" },
+        { id: "3", flavor: "Fennel", quantityMc: 45, lastUpdated: "2026-07-08", category: "Gum 12pk 24ct" },
+        { id: "4", flavor: "Ginger", quantityMc: 60, lastUpdated: "2026-07-06", category: "Gum 12pk 24ct" },
+        { id: "5", flavor: "Cleanse", quantityMc: 30, lastUpdated: "2026-07-08", category: "Gum Bag 12ct" },
+      ];
+    } catch (e) {
+      console.error("Error reading sg_finished_goods:", e);
+    }
+
+    let needsList: any[] = [];
+    try {
+      const savedNeeds = localStorage.getItem("sg_production_needs");
+      needsList = savedNeeds ? JSON.parse(savedNeeds) : [
+        { flavor: "Peppermint", packSizeName: "Bag 70ct", casesNeeded: 150, notes: "Amazon replenishment" },
+        { flavor: "Cinnamon", packSizeName: "Bag 70ct", casesNeeded: 95, notes: "Retail PO #44102" },
+        { flavor: "Fennel", packSizeName: "10 Pack", casesNeeded: 40, notes: "Distributor replenishment" },
+        { flavor: "Ginger", packSizeName: "10 Pack", casesNeeded: 65, notes: "Urgent Out-of-Stock alert" },
+        { flavor: "Cleanse", packSizeName: "Bag 70ct", casesNeeded: 25, notes: "Backlog backlog clearing" },
+      ];
+    } catch (e) {
+      console.error("Error reading sg_production_needs:", e);
+    }
+
+    return settings.flavors.map((flavor) => {
+      const demands = needsList.filter(
+        (n) => n.flavor.toLowerCase() === flavor.toLowerCase()
+      );
+
+      const grossDemandLbs = demands.reduce((acc, curr) => {
+        const matchedPs = findBestPackSize(curr.packSizeName, settings.packSizes);
+        const lbsPerMc = matchedPs ? matchedPs.lbsPerMc : 10;
+        return acc + (curr.casesNeeded * lbsPerMc);
+      }, 0);
+
+      const fgItems = fgInventory.filter(
+        (item) => item.flavor.toLowerCase() === flavor.toLowerCase()
+      );
+      const fgOnHandLbs = fgItems.reduce((acc, curr) => {
+        const matchedPs = findBestPackSize(curr.category, settings.packSizes);
+        const lbsPerMc = matchedPs ? matchedPs.lbsPerMc : 10;
+        return acc + (curr.quantityMc * lbsPerMc);
+      }, 0);
+
+      const wipCutLbs = settings.openingWipCut[flavor] || 0;
+      const wipExtrudedLbs = settings.openingWipExtruded[flavor] || 0;
+      const wipCookedLbs = settings.openingWipCooked[flavor] || 0;
+
+      const packingNeededLbs = Math.max(0, grossDemandLbs - fgOnHandLbs);
+      const cuttingNeededLbs = Math.max(0, packingNeededLbs - wipCutLbs);
+      const extrudingNeededLbs = Math.max(0, cuttingNeededLbs - wipExtrudedLbs);
+      const cookingNeededLbs = Math.max(0, extrudingNeededLbs - wipCookedLbs);
+
+      const bigRoundSize = settings.cookingBigLbsPerRound || 100;
+      const cookingRounds = Math.ceil(cookingNeededLbs / bigRoundSize);
+
+      const totalInventoryLbs = fgOnHandLbs + wipCutLbs + wipExtrudedLbs + wipCookedLbs;
+      const extraLbs = Math.max(0, totalInventoryLbs - grossDemandLbs);
+
+      return {
+        flavor,
+        cookingNeededLbs,
+        cookingRounds,
+        extraLbs,
+      };
+    });
+  }, [settings]);
 
   // Jump to date search input
   const [jumpDateStr, setJumpDateStr] = useState("");
@@ -634,13 +750,67 @@ export default function PlannerTab({
                   </td>
                   {visibleDates.map((date) => {
                     const day = getDaySchedule(date);
-                    const bigSum = day.closed ? 0 : day.cookingBig.reduce((sum, e) => sum + (e.rounds || 0) * settings.cookingBigLbsPerRound, 0);
-                    const smallSum = day.closed ? 0 : day.cookingSmall.reduce((sum, e) => sum + (e.rounds || 0) * settings.cookingSmallLbsPerRound, 0);
-                    const totalSumConverted = convertValue(bigSum + smallSum, cookingUnitId, settings);
                     
+                    // Calculate dynamic daily scheduled breakdown
+                    const scheduledByFlavor: Record<string, number> = {};
+                    if (!day.closed) {
+                      day.cookingBig.forEach((entry) => {
+                        if (entry.flavor && entry.rounds > 0) {
+                          const lbs = entry.rounds * settings.cookingBigLbsPerRound;
+                          scheduledByFlavor[entry.flavor] = (scheduledByFlavor[entry.flavor] || 0) + lbs;
+                        }
+                      });
+                      day.cookingSmall.forEach((entry) => {
+                        if (entry.flavor && entry.rounds > 0) {
+                          const lbs = entry.rounds * settings.cookingSmallLbsPerRound;
+                          scheduledByFlavor[entry.flavor] = (scheduledByFlavor[entry.flavor] || 0) + lbs;
+                        }
+                      });
+                    }
+
+                    const scheduledFlavorsBreakdown = Object.entries(scheduledByFlavor)
+                      .map(([flavor, lbs]) => ({
+                        flavor,
+                        quantity: convertValue(lbs, cookingUnitId, settings),
+                      }))
+                      .filter((item) => item.quantity > 0);
+
+                    const totalScheduledConverted = scheduledFlavorsBreakdown.reduce((sum, item) => sum + item.quantity, 0);
+
+                    const neededFlavorsBreakdown = cookingNeededData
+                      .filter((item) => item.cookingNeededLbs > 0)
+                      .map((item) => ({
+                        flavor: item.flavor,
+                        quantity: convertValue(item.cookingNeededLbs, cookingUnitId, settings),
+                        suffix: `(${item.cookingRounds} rds)`,
+                      }));
+                    const totalNeededConverted = neededFlavorsBreakdown.reduce((sum, item) => sum + item.quantity, 0);
+                    const totalRoundsNeeded = cookingNeededData
+                      .filter((item) => item.cookingNeededLbs > 0)
+                      .reduce((sum, item) => sum + item.cookingRounds, 0);
+
                     return (
                       <td key={date} className={`px-3 py-3 border-r border-slate-150 text-right font-black text-xs text-slate-700 bg-slate-50/50 ${day.closed ? "bg-slate-200/40 text-slate-400" : ""}`}>
-                        Sched: {totalSumConverted.toLocaleString(undefined, { maximumFractionDigits: 1 })} {getUnitLabel(cookingUnitId, settings)}
+                        {day.closed ? "" : (
+                          <div className="flex gap-4">
+                            <WipSection
+                              title="Need"
+                              total={totalNeededConverted.toLocaleString(undefined, { maximumFractionDigits: 1 }) + (totalRoundsNeeded > 0 ? ` (${totalRoundsNeeded} rds)` : "")}
+                              unit={getUnitLabel(cookingUnitId, settings)}
+                              flavorBreakdown={neededFlavorsBreakdown}
+                              colorClass="text-slate-500"
+                            />
+                            <div className="border-l border-slate-200 pl-4">
+                               <WipSection
+                                title="Sched"
+                                total={totalScheduledConverted.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                                unit={getUnitLabel(cookingUnitId, settings)}
+                                flavorBreakdown={scheduledFlavorsBreakdown}
+                                colorClass="text-indigo-600"
+                               />
+                            </div>
+                          </div>
+                        )}
                       </td>
                     );
                   })}
