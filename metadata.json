@@ -1,0 +1,6 @@
+{
+  "name": "Production Planner",
+  "description": "Daily production planning and output forecasting tool for Simply Gum factory operations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
